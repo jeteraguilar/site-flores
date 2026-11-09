@@ -1,0 +1,48 @@
+# Pipeline: install → typecheck + test (com Postgres real para migrações) → build → imagem Docker
+# Variáveis protegidas/mascaradas em Settings › CI/CD: DATABASE_URL (produção), S3_*, SMTP_URL, SITE_URL.
+stages: [verify, build, package]
+
+default:
+  image: node:22-alpine
+  cache:
+    key: { files: [package-lock.json] }
+    paths: [.npm/]
+  before_script:
+    - npm ci --cache .npm --prefer-offline --no-audit --no-fund
+
+typecheck:
+  stage: verify
+  script: [npm run typecheck]
+
+test:
+  stage: verify
+  services: [{ name: "postgres:16-alpine", alias: db }]
+  variables:
+    POSTGRES_USER: rosa
+    POSTGRES_PASSWORD: rosa
+    POSTGRES_DB: rosa_test
+    DATABASE_URL: postgresql://rosa:rosa@db:5432/rosa_test
+  script:
+    - npm test
+    - npm run db:migrate   # valida as migrações num banco limpo
+    - npm run db:migrate   # e que são idempotentes
+    - npm run db:seed
+
+build:
+  stage: build
+  script: [npm run build]
+  artifacts:
+    paths: [.next/]
+    expire_in: 1 day
+
+docker:
+  stage: package
+  image: docker:27
+  services: [docker:27-dind]
+  before_script: []
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push --all-tags "$CI_REGISTRY_IMAGE"
